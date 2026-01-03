@@ -133,6 +133,7 @@ async def all_buttons(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID and text in ["⚙️ SOZLAMALAR", "📂 Kategoriya qo'shish", "🛍 Maxsulot qo'shish", "🛍 Maxsulot o'chirish", "🎓 Kurs taxrirlash", "💱 Valyuta kursi", "👤 Admin ma'lumotlari", "💳 Karta raqami", "📍 Manzil", "📄 PDF hisobot"]:
         return
 
+    # Asosiy tugmalar
     if text == "MAXSULOTLAR":
         cursor.execute("SELECT id, name FROM categories")
         cats = cursor.fetchall()
@@ -200,9 +201,21 @@ async def all_buttons(message: types.Message, state: FSMContext):
     elif text == "⚙️ SOZLAMALAR":
         await message.answer("⚙️ Admin panel – tanlang:", reply_markup=admin_panel_menu)
 
+    # Admin panel tugmalari – hammasi ishlaydi
     elif text == "📂 Kategoriya qo'shish":
         await message.answer("Yangi kategoriya nomini yozing:", reply_markup=ReplyKeyboardRemove())
         await state.set_state(AdminStates.add_category_name)
+
+    elif text == "📂 Kategoriya o'chirish":
+        cursor.execute("SELECT id, name FROM categories")
+        cats = cursor.fetchall()
+        if not cats:
+            await message.answer("Kategoriyalar yo'q.", reply_markup=admin_panel_menu)
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"delcat_{cid}")] for cid, name in cats
+        ])
+        await message.answer("O'chiriladigan kategoriyani tanlang:", reply_markup=kb)
 
     elif text == "🛍 Maxsulot qo'shish":
         cursor.execute("SELECT id, name FROM categories")
@@ -216,9 +229,39 @@ async def all_buttons(message: types.Message, state: FSMContext):
         await message.answer("Kategoriyani tanlang:", reply_markup=kb)
         await state.set_state(AdminStates.add_product_category)
 
+    elif text == "🛍 Maxsulot o'chirish":
+        cursor.execute("SELECT id, name FROM categories")
+        cats = cursor.fetchall()
+        if not cats:
+            await message.answer("Kategoriyalar yo'q.", reply_markup=admin_panel_menu)
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=name, callback_data=f"delprodcat_{cid}")] for cid, name in cats
+        ])
+        await message.answer("O'chirish uchun kategoriyani tanlang:", reply_markup=kb)
+
+    elif text == "🎓 Kurs taxrirlash":
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Oddiy o'quv kursi", callback_data="editcourse_oddiy")],
+            [InlineKeyboardButton(text="Master klass", callback_data="editcourse_master")]
+        ])
+        await message.answer("Kurs turini tanlang:", reply_markup=kb)
+
     elif text == "💱 Valyuta kursi":
         await message.answer("1 USD = nechchi so'm? Yangi kursni yozing:", reply_markup=ReplyKeyboardRemove())
         await state.set_state(AdminStates.set_usd_rate)
+
+    elif text == "👤 Admin ma'lumotlari":
+        await message.answer("Yangi admin ma'lumotlarini yozing (telefon + Telegram):", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(AdminStates.set_admin_info)
+
+    elif text == "💳 Karta raqami":
+        await message.answer("Yangi karta raqamini yozing:", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(AdminStates.set_card_number)
+
+    elif text == "📍 Manzil":
+        await message.answer("Manzilni latitude,longitude formatida yozing (masalan: 41.12345,69.12345):", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(AdminStates.set_location)
 
     elif text == "📄 PDF hisobot":
         pdf_path = f"pdfs/hisobot_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
@@ -248,12 +291,12 @@ async def all_buttons(message: types.Message, state: FSMContext):
             await message.answer_document(FSInputFile(pdf_path), caption="Hisobot PDF")
             os.remove(pdf_path)
         except Exception as e:
-            await message.answer("PDF yaratishda xato yuz berdi. Reportlab o'rnatilmagan bo'lishi mumkin.")
+            await message.answer("PDF yaratishda xato yuz berdi.")
 
     elif text == "🔙 Asosiy menyuga qaytish":
         await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=admin_menu)
 
-# ==================== ADMIN HANDLERLAR (kategoriya, maxsulot, kurs, sozlamalar) ====================
+# ==================== BARCHA ADMIN STATE HANDLERLARI ====================
 @dp.message(AdminStates.add_category_name)
 async def add_category_process(message: types.Message, state: FSMContext):
     name = message.text.strip()
@@ -265,28 +308,39 @@ async def add_category_process(message: types.Message, state: FSMContext):
         await message.answer("❌ Bu nomdagi kategoriya allaqachon bor.", reply_markup=admin_panel_menu)
     await state.clear()
 
-@dp.message(lambda m: m.text == "📂 Kategoriya o'chirish" and m.from_user.id == ADMIN_ID)
-async def delete_category_start(message: types.Message):
-    cursor.execute("SELECT id, name FROM categories")
-    cats = cursor.fetchall()
-    if not cats:
-        await message.answer("Kategoriyalar yo'q.", reply_markup=admin_panel_menu)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=name, callback_data=f"delcat_{cid}")] for cid, name in cats
-    ])
-    await message.answer("O'chiriladigan kategoriyani tanlang:", reply_markup=kb)
+@dp.message(AdminStates.set_usd_rate)
+async def set_usd_rate_process(message: types.Message, state: FSMContext):
+    try:
+        rate = float(message.text.strip().replace(" ", ""))
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('usd_rate', ?)", (str(rate),))
+        conn.commit()
+        await message.answer(f"✅ Valyuta kursi yangilandi: 1 USD = {rate:,} so'm", reply_markup=admin_panel_menu)
+        await state.clear()
+    except ValueError:
+        await message.answer("Raqam kiriting!")
 
-@dp.callback_query(lambda c: c.data.startswith("delcat_"))
-async def delete_category_process(callback: types.CallbackQuery):
-    cat_id = int(callback.data.split("_")[1])
-    cursor.execute("DELETE FROM products WHERE category_id=?", (cat_id,))
-    cursor.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+@dp.message(AdminStates.set_admin_info)
+async def set_admin_info(message: types.Message, state: FSMContext):
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_info', ?)", (message.text.strip(),))
     conn.commit()
-    await callback.message.answer("✅ Kategoriya va uning maxsulotlari o'chirildi!", reply_markup=admin_panel_menu)
-    await callback.answer()
+    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
+    await state.clear()
 
-# Maxsulot qo'shish (valyuta bilan)
+@dp.message(AdminStates.set_card_number)
+async def set_card(message: types.Message, state: FSMContext):
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('card_number', ?)", (message.text.strip(),))
+    conn.commit()
+    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
+    await state.clear()
+
+@dp.message(AdminStates.set_location)
+async def set_location(message: types.Message, state: FSMContext):
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('location', ?)", (message.text.strip(),))
+    conn.commit()
+    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
+    await state.clear()
+
+# ==================== MAXSULOT QO'SHISH VA O'CHIRISH ====================
 @dp.callback_query(lambda c: c.data.startswith("addprodcat_"))
 async def add_product_category(callback: types.CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[1])
@@ -352,19 +406,6 @@ async def add_product_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Raqam kiriting!")
 
-# Maxsulot o'chirish
-@dp.message(lambda m: m.text == "🛍 Maxsulot o'chirish" and m.from_user.id == ADMIN_ID)
-async def delete_product_start(message: types.Message):
-    cursor.execute("SELECT id, name FROM categories")
-    cats = cursor.fetchall()
-    if not cats:
-        await message.answer("Kategoriyalar yo'q.", reply_markup=admin_panel_menu)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=name, callback_data=f"delprodcat_{cid}")] for cid, name in cats
-    ])
-    await message.answer("O'chirish uchun kategoriyani tanlang:", reply_markup=kb)
-
 @dp.callback_query(lambda c: c.data.startswith("delprodcat_"))
 async def delete_product_category(callback: types.CallbackQuery):
     cat_id = int(callback.data.split("_")[1])
@@ -388,15 +429,16 @@ async def delete_product_process(callback: types.CallbackQuery):
     await callback.message.answer("✅ Maxsulot o'chirildi!", reply_markup=admin_panel_menu)
     await callback.answer()
 
-# Kurs taxrirlash
-@dp.message(lambda m: m.text == "🎓 Kurs taxrirlash" and m.from_user.id == ADMIN_ID)
-async def edit_course_start(message: types.Message, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Oddiy o'quv kursi", callback_data="editcourse_oddiy")],
-        [InlineKeyboardButton(text="Master klass", callback_data="editcourse_master")]
-    ])
-    await message.answer("Kurs turini tanlang:", reply_markup=kb)
+@dp.callback_query(lambda c: c.data.startswith("delcat_"))
+async def delete_category_process(callback: types.CallbackQuery):
+    cat_id = int(callback.data.split("_")[1])
+    cursor.execute("DELETE FROM products WHERE category_id=?", (cat_id,))
+    cursor.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+    conn.commit()
+    await callback.message.answer("✅ Kategoriya va uning maxsulotlari o'chirildi!", reply_markup=admin_panel_menu)
+    await callback.answer()
 
+# ==================== KURS TAXRIRLASH ====================
 @dp.callback_query(lambda c: c.data.startswith("editcourse_"))
 async def edit_course_type(callback: types.CallbackQuery, state: FSMContext):
     ctype = callback.data.split("_")[1]
@@ -424,55 +466,7 @@ async def edit_course_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("Raqam kiriting!")
 
-# Admin ma'lumotlari, karta raqami, manzil
-@dp.message(lambda m: m.text == "👤 Admin ma'lumotlari" and m.from_user.id == ADMIN_ID)
-async def edit_admin_info(message: types.Message, state: FSMContext):
-    await message.answer("Yangi admin ma'lumotlarini yozing (telefon + Telegram):", reply_markup=ReplyKeyboardRemove())
-    await state.set_state(AdminStates.set_admin_info)
-
-@dp.message(AdminStates.set_admin_info)
-async def set_admin_info(message: types.Message, state: FSMContext):
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_info', ?)", (message.text.strip(),))
-    conn.commit()
-    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
-    await state.clear()
-
-@dp.message(lambda m: m.text == "💳 Karta raqami" and m.from_user.id == ADMIN_ID)
-async def edit_card(message: types.Message, state: FSMContext):
-    await message.answer("Yangi karta raqamini yozing:", reply_markup=ReplyKeyboardRemove())
-    await state.set_state(AdminStates.set_card_number)
-
-@dp.message(AdminStates.set_card_number)
-async def set_card(message: types.Message, state: FSMContext):
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('card_number', ?)", (message.text.strip(),))
-    conn.commit()
-    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
-    await state.clear()
-
-@dp.message(lambda m: m.text == "📍 Manzil" and m.from_user.id == ADMIN_ID)
-async def edit_location(message: types.Message, state: FSMContext):
-    await message.answer("Manzilni latitude,longitude formatida yozing (masalan: 41.12345,69.12345):", reply_markup=ReplyKeyboardRemove())
-    await state.set_state(AdminStates.set_location)
-
-@dp.message(AdminStates.set_location)
-async def set_location(message: types.Message, state: FSMContext):
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('location', ?)", (message.text.strip(),))
-    conn.commit()
-    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
-    await state.clear()
-
-@dp.message(AdminStates.set_usd_rate)
-async def set_usd_rate_process(message: types.Message, state: FSMContext):
-    try:
-        rate = float(message.text.strip().replace(" ", ""))
-        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('usd_rate', ?)", (str(rate),))
-        conn.commit()
-        await message.answer(f"✅ Valyuta kursi yangilandi: 1 USD = {rate:,} so'm", reply_markup=admin_panel_menu)
-        await state.clear()
-    except ValueError:
-        await message.answer("Raqam kiriting!")
-
-# ==================== MAXSULOTLAR KO'RSATISH ====================
+# ==================== MAXSULOT KO'RSATISH ====================
 @dp.callback_query(lambda c: c.data.startswith("cat_"))
 async def show_products(callback: types.CallbackQuery):
     cat_id = int(callback.data.split("_")[1])
@@ -650,20 +644,12 @@ async def confirm_payment(callback: types.CallbackQuery):
 
     if payment_type == "course":
         await bot.send_message(user_id, "Siz o'quv kursiga ro'yxatga olindingiz!", reply_markup=main_menu)
-        # Bazaga saqlash
-        cursor.execute("INSERT INTO enrollments (user_id, fish, course_type, amount, date, screenshot_id) VALUES (?, ?, ?, ?, ?, ?)",
-                       (user_id, "F.I.Sh", course_type, 0, datetime.now().strftime('%d.%m.%Y'), screenshot_id))
-        conn.commit()
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚶 Uzim olib ketaman", callback_data="self_pickup")],
             [InlineKeyboardButton(text="🚚 Yetkazib berish", callback_data="delivery")]
         ])
         await bot.send_message(user_id, "Buyurtmangiz tasdiqlandi! Yetkazib berish turini tanlang:", reply_markup=kb)
-        # Bazaga saqlash
-        cursor.execute("INSERT INTO orders (user_id, total_som, date, screenshot_id) VALUES (?, ?, ?, ?)",
-                       (user_id, 0, datetime.now().strftime('%d.%m.%Y'), screenshot_id))
-        conn.commit()
 
     if user_id in pending_payments:
         del pending_payments[user_id]
