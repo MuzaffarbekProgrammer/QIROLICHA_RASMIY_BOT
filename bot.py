@@ -14,14 +14,13 @@ from aiogram.types import (
     FSInputFile,
     ReplyKeyboardRemove
 )
-from aiogram.client.session.aiohttp import AiohttpSession
+
 
 # ==================== SOZLAMALAR ====================
 API_TOKEN = '8297594840:AAGjyGhsgaGWO0nQPX4mDvdmAN4BES9UVjY'
 ADMIN_ID = 1063577925
 
-session = AiohttpSession(proxy="http://proxy.server:3128")
-bot = Bot(token=API_TOKEN, session=session)
+bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
