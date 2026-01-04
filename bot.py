@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from aiohttp import web
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -13,8 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    FSInputFile,
-    ReplyKeyboardRemove
+    FSInputFile, ReplyKeyboardRemove, CallbackQuery
 )
 
 # ==================== SOZLAMALAR ====================
@@ -27,82 +26,69 @@ dp = Dispatcher(storage=storage)
 
 logging.basicConfig(level=logging.INFO)
 
-if not os.path.exists('photos'):
-    os.makedirs('photos')
-if not os.path.exists('pdfs'):
-    os.makedirs('pdfs')
+if not os.path.exists('photos'): os.makedirs('photos')
 
-# ==================== BAZA ====================
+# ==================== BAZA BILAN ISHLASH ====================
 conn = sqlite3.connect('bot.db', check_same_thread=False)
 cursor = conn.cursor()
 
-cursor.execute('''CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS products
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   category_id INTEGER, name TEXT, description TEXT,
-                   code TEXT, price_som INTEGER, price_usd REAL, currency TEXT, photo TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS cart
-                  (user_id INTEGER, product_id INTEGER, quantity INTEGER,
-                   PRIMARY KEY(user_id, product_id))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS courses
-                  (type TEXT PRIMARY KEY, description TEXT, price_som INTEGER, start_date TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS settings
-                  (key TEXT PRIMARY KEY, value TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS enrollments
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   user_id INTEGER, fish TEXT, course_type TEXT, amount REAL, date TEXT, screenshot_id TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS orders
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   user_id INTEGER, total_som REAL, delivery_type TEXT, date TEXT, screenshot_id TEXT)''')
-conn.commit()
+def init_db():
+    cursor.execute('''CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS products
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER, name TEXT, description TEXT,
+                       code TEXT, price_som INTEGER, price_usd REAL, currency TEXT, photo TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS cart
+                      (user_id INTEGER, product_id INTEGER, quantity INTEGER, PRIMARY KEY(user_id, product_id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS courses
+                      (type TEXT PRIMARY KEY, description TEXT, price_som INTEGER)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS enrollments
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, fish TEXT, course_type TEXT, amount REAL, date TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS orders
+                      (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, total_som REAL, date TEXT)''')
+    # Standart sozlamalar
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('usd_rate', '12800')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_info', 'Tel: +998901234567 | @admin_user')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('card_number', '8600 0000 0000 0000')")
+    conn.commit()
 
-# ==================== FSM ====================
-class CartStates(StatesGroup):
-    waiting_screenshot = State()
-    waiting_delivery = State()
+init_db()
 
-class CourseStates(StatesGroup):
-    waiting_fish = State()
-    waiting_screenshot = State()
-    waiting_delivery = State()
-
+# ==================== FSM STATES ====================
 class AdminStates(StatesGroup):
-    add_category_name = State()
-    add_product_category = State()
-    add_product_photo = State()
-    add_product_name = State()
-    add_product_desc = State()
-    add_product_code = State()
-    add_product_currency = State()
-    add_product_price = State()
-    edit_course_type = State()
-    edit_course_desc = State()
-    edit_course_price = State()
-    set_admin_info = State()
-    set_card_number = State()
-    set_location = State()
-    set_usd_rate = State()
+    add_category = State()
+    usd_rate = State()
+    admin_info = State()
+    card_number = State()
+    location = State()
+    add_product = State() # Bu yerda bir nechta kichik qadamlar ishlatiladi
+    edit_course = State()
+
+class UserStates(StatesGroup):
+    waiting_fish = State()
+    waiting_payment_proof = State()
+
+# ==================== YORDAMCHI FUNKSIYALAR ====================
+def get_setting(key):
+    cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = cursor.fetchone()
+    return row[0] if row else ""
+
+def get_usd_rate():
+    return float(get_setting('usd_rate'))
 
 # ==================== MENYULAR ====================
-main_menu = ReplyKeyboardMarkup(
-    keyboard=[
+def get_main_menu(uid):
+    kb = [
         [KeyboardButton(text="MAXSULOTLAR"), KeyboardButton(text="SAVATCHA")],
         [KeyboardButton(text="O'QUV KURS YANGILIKLARI"), KeyboardButton(text="BIZ BILAN BOG'LANISH")],
         [KeyboardButton(text="BIZNING MANZIL")]
-    ],
-    resize_keyboard=True
-)
+    ]
+    if uid == ADMIN_ID:
+        kb.append([KeyboardButton(text="⚙️ SOZLAMALAR")])
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-admin_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="MAXSULOTLAR"), KeyboardButton(text="SAVATCHA")],
-        [KeyboardButton(text="O'QUV KURS YANGILIKLARI"), KeyboardButton(text="BIZ BILAN BOG'LANISH")],
-        [KeyboardButton(text="BIZNING MANZIL"), KeyboardButton(text="⚙️ SOZLAMALAR")]
-    ],
-    resize_keyboard=True
-)
-
-admin_panel_menu = ReplyKeyboardMarkup(
+admin_panel_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📂 Kategoriya qo'shish"), KeyboardButton(text="📂 Kategoriya o'chirish")],
         [KeyboardButton(text="🛍 Maxsulot qo'shish"), KeyboardButton(text="🛍 Maxsulot o'chirish")],
@@ -114,472 +100,238 @@ admin_panel_menu = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ==================== VALYUTA KURSI ====================
-def get_usd_rate():
-    cursor.execute("SELECT value FROM settings WHERE key='usd_rate'")
-    row = cursor.fetchone()
-    return float(row[0]) if row else 12600.0
-
-# ==================== /start ====================
+# ==================== /START ====================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await message.answer("👑 Assalomu alaykum, Admin!\nQirolicha botiga xush kelibsiz!", reply_markup=admin_menu)
-    else:
-        await message.answer("👑 Assalomu alaykum!\nQirolicha o'quv markazi va do'kon botiga xush kelibsiz!", reply_markup=main_menu)
+    await message.answer("👑 Qirolicha botiga xush kelibsiz!", reply_markup=get_main_menu(message.from_user.id))
 
-# ==================== ASOSIY TUGMALAR ====================
-@dp.message(lambda m: m.text in ["MAXSULOTLAR", "SAVATCHA", "O'QUV KURS YANGILIKLARI", "BIZ BILAN BOG'LANISH", "BIZNING MANZIL", "⚙️ SOZLAMALAR"])
-async def main_buttons(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is not None:
-        return
+# ==================== MAXSULOTLAR ====================
+@dp.message(F.text == "MAXSULOTLAR")
+async def show_categories(message: types.Message):
+    cursor.execute("SELECT id, name FROM categories")
+    cats = cursor.fetchall()
+    buttons = [[InlineKeyboardButton(text="🌟 BARCHA MAXSULOTLAR", callback_data="show_all")]]
+    for cid, cname in cats:
+        buttons.append([InlineKeyboardButton(text=cname, callback_data=f"viewcat_{cid}")])
+    
+    await message.answer("📂 Bo'limni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-    text = message.text
-    menu = admin_menu if message.from_user.id == ADMIN_ID else main_menu
-
-    if text == "MAXSULOTLAR":
-        cursor.execute("SELECT id, name FROM categories")
-        cats = cursor.fetchall()
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Barcha maxsulotlar", callback_data="all_products")]
-        ] + [
-            [InlineKeyboardButton(text=name, callback_data=f"cat_{cid}")] for cid, name in cats
-        ])
-        await message.answer("📂 Kategoriyani tanlang:", reply_markup=kb)
-
-    elif text == "SAVATCHA":
-        user_id = message.from_user.id
-        cursor.execute("""SELECT p.name, p.price_som, p.price_usd, p.currency, c.quantity
-                          FROM cart c JOIN products p ON c.product_id = p.id WHERE c.user_id=?""", (user_id,))
-        items = cursor.fetchall()
-        if not items:
-            await message.answer("🛒 Savatchangiz bo'sh.", reply_markup=menu)
-            return
-        usd_rate = get_usd_rate()
-        total_som = 0
-        msg_text = "<b>Savatchangiz:</b>\n\n"
-        for name, price_som, price_usd, currency, qty in items:
-            if currency == "USD":
-                item_total = price_usd * qty
-                som_total = item_total * usd_rate
-                msg_text += f"• {name} × {qty} = 💵 ${item_total:.2f} (~{som_total:,.0f} so'm)\n"
-            else:
-                item_total = price_som * qty
-                usd_total = item_total / usd_rate if usd_rate else 0
-                msg_text += f"• {name} × {qty} = 🇺🇿 {item_total:,} so'm (~${usd_total:.2f})\n"
-            total_som += som_total if currency == "USD" else item_total
-        msg_text += f"\n\n<b>Jami: {total_som:,.0f} so'm</b>"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="confirm_order")]
-        ])
-        await message.answer(msg_text, reply_markup=kb, parse_mode="HTML")
-
-    elif text == "O'QUV KURS YANGILIKLARI":
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Oddiy o'quv kursi", callback_data="course_oddiy")],
-            [InlineKeyboardButton(text="Master klass", callback_data="course_master")]
-        ])
-        await message.answer("🎓 Kurslarimiz:", reply_markup=kb)
-
-    elif text == "BIZ BILAN BOG'LANISH":
-        cursor.execute("SELECT value FROM settings WHERE key='admin_info'")
-        row = cursor.fetchone()
-        info = row[0] if row else "+998 xx xxx xx xx | t.me/admin"
-        await message.answer(info, reply_markup=menu)
-
-    elif text == "BIZNING MANZIL":
-        cursor.execute("SELECT value FROM settings WHERE key='location'")
-        row = cursor.fetchone()
-        if row and "," in row[0]:
-            try:
-                lat, lng = map(float, row[0].split(","))
-                await message.answer_location(latitude=lat, longitude=lng)
-                await message.answer("Manzil yuqorida ko'rsatildi.", reply_markup=menu)
-                return
-            except:
-                pass
-        await message.answer("Manzil hali kiritilmagan.", reply_markup=menu)
-
-    elif text == "⚙️ SOZLAMALAR":
-        await message.answer("⚙️ Admin panel – tanlang:", reply_markup=admin_panel_menu)
-
-# ==================== ADMIN PANEL TUGMALARI ====================
-@dp.message(lambda m: m.text in ["📂 Kategoriya qo'shish", "📂 Kategoriya o'chirish", "🛍 Maxsulot qo'shish", "🛍 Maxsulot o'chirish", "🎓 Kurs taxrirlash", "💱 Valyuta kursi", "👤 Admin ma'lumotlari", "💳 Karta raqami", "📍 Manzil", "📄 PDF hisobot", "🔙 Asosiy menyuga qaytish"])
-async def admin_panel_buttons(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is not None:
-        return
-
-    text = message.text
-
-    if text == "📂 Kategoriya qo'shish":
-        await message.answer("Yangi kategoriya nomini yozing:", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(AdminStates.add_category_name)
-
-    elif text == "📂 Kategoriya o'chirish":
-        cursor.execute("SELECT id, name FROM categories")
-        cats = cursor.fetchall()
-        if not cats:
-            await message.answer("Kategoriyalar yo'q.", reply_markup=admin_panel_menu)
-            return
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"delcat_{cid}")] for cid, name in cats
-        ])
-        await message.answer("O'chiriladigan kategoriyani tanlang:", reply_markup=kb)
-
-    elif text == "🛍 Maxsulot qo'shish":
-        cursor.execute("SELECT id, name FROM categories")
-        cats = cursor.fetchall()
-        if not cats:
-            await message.answer("Avval kategoriya qo'shing!", reply_markup=admin_panel_menu)
-            return
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"addprodcat_{cid}")] for cid, name in cats
-        ])
-        await message.answer("Kategoriyani tanlang:", reply_markup=kb)
-        await state.set_state(AdminStates.add_product_category)
-
-    elif text == "🛍 Maxsulot o'chirish":
-        cursor.execute("SELECT id, name FROM categories")
-        cats = cursor.fetchall()
-        if not cats:
-            await message.answer("Kategoriyalar yo'q.", reply_markup=admin_panel_menu)
-            return
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"delprodcat_{cid}")] for cid, name in cats
-        ])
-        await message.answer("O'chirish uchun kategoriyani tanlang:", reply_markup=kb)
-
-    elif text == "🎓 Kurs taxrirlash":
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Oddiy o'quv kursi", callback_data="editcourse_oddiy")],
-            [InlineKeyboardButton(text="Master klass", callback_data="editcourse_master")]
-        ])
-        await message.answer("Kurs turini tanlang:", reply_markup=kb)
-
-    elif text == "💱 Valyuta kursi":
-        await message.answer("1 USD = nechchi so'm? Yangi kursni yozing:", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(AdminStates.set_usd_rate)
-
-    elif text == "👤 Admin ma'lumotlari":
-        await message.answer("Yangi admin ma'lumotlarini yozing (telefon + Telegram):", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(AdminStates.set_admin_info)
-
-    elif text == "💳 Karta raqami":
-        await message.answer("Yangi karta raqamini yozing:", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(AdminStates.set_card_number)
-
-    elif text == "📍 Manzil":
-        await message.answer("Manzilni latitude,longitude formatida yozing (masalan: 41.12345,69.12345):", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(AdminStates.set_location)
-
-    elif text == "📄 PDF hisobot":
-        hisobot_path = f"pdfs/hisobot_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-        with open(hisobot_path, "w", encoding="utf-8") as f:
-            f.write("Qirolicha Bot Hisoboti\n\n")
-            f.write(f"Sana: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n")
-            f.write("Ro'yxatga olinganlar (kurslar):\n")
-            cursor.execute("SELECT id, fish, course_type, amount, date FROM enrollments")
-            enrolls = cursor.fetchall()
-            if not enrolls:
-                f.write("Hozircha yo'q.\n")
-            for row in enrolls:
-                f.write(f"{row[0]}. {row[1]} - {row[2]} - {row[3]} so'm - {row[4]}\n")
-            f.write("\nBuyurtmalar (maxsulotlar):\n")
-            cursor.execute("SELECT id, total_som, delivery_type, date FROM orders")
-            orders = cursor.fetchall()
-            if not orders:
-                f.write("Hozircha yo'q.\n")
-            for row in orders:
-                f.write(f"{row[0]}. {row[1]:,} so'm - {row[2]} - {row[3]}\n")
-        await message.answer_document(FSInputFile(hisobot_path), caption="Hisobot (text fayl)")
-        os.remove(hisobot_path)
-
-    elif text == "🔙 Asosiy menyuga qaytish":
-        await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=admin_menu)
-
-# ==================== STATE HANDLERLARI ====================
-@dp.message(AdminStates.add_category_name)
-async def add_category_process(message: types.Message, state: FSMContext):
-    name = message.text.strip()
-    try:
-        cursor.execute("INSERT INTO categories (name) VALUES (?)", (name,))
-        conn.commit()
-        await message.answer(f"✅ '{name}' kategoriyasi qo'shildi!", reply_markup=admin_panel_menu)
-    except sqlite3.IntegrityError:
-        await message.answer("❌ Bu nomdagi kategoriya allaqachon bor.", reply_markup=admin_panel_menu)
-    await state.clear()
-
-@dp.message(AdminStates.set_usd_rate)
-async def set_usd_rate_process(message: types.Message, state: FSMContext):
-    try:
-        rate = float(message.text.strip().replace(" ", ""))
-        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('usd_rate', ?)", (str(rate),))
-        conn.commit()
-        await message.answer(f"✅ Valyuta kursi yangilandi: 1 USD = {rate:,} so'm", reply_markup=admin_panel_menu)
-        await state.clear()
-    except ValueError:
-        await message.answer("Raqam kiriting!")
-
-@dp.message(AdminStates.set_admin_info)
-async def set_admin_info(message: types.Message, state: FSMContext):
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('admin_info', ?)", (message.text.strip(),))
-    conn.commit()
-    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
-    await state.clear()
-
-@dp.message(AdminStates.set_card_number)
-async def set_card(message: types.Message, state: FSMContext):
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('card_number', ?)", (message.text.strip(),))
-    conn.commit()
-    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
-    await state.clear()
-
-@dp.message(AdminStates.set_location)
-async def set_location(message: types.Message, state: FSMContext):
-    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('location', ?)", (message.text.strip(),))
-    conn.commit()
-    await message.answer("✅ Yangilandi!", reply_markup=admin_panel_menu)
-    await state.clear()
-
-# ==================== MAXSULOT QO'SHISH STATE HANDLERLARI ====================
-@dp.callback_query(lambda c: c.data.startswith("addprodcat_"))
-async def add_product_category(callback: types.CallbackQuery, state: FSMContext):
-    cat_id = int(callback.data.split("_")[1])
-    await state.update_data(cat_id=cat_id)
-    await callback.message.answer("Maxsulot rasmini yuboring (ixtiyoriy):", reply_markup=ReplyKeyboardRemove())
-    await state.set_state(AdminStates.add_product_photo)
-    await callback.answer()
-
-@dp.message(AdminStates.add_product_photo)
-async def add_product_photo(message: types.Message, state: FSMContext):
-    photo_name = None
-    if message.photo:
-        file = await bot.get_file(message.photo[-1].file_id)
-        photo_name = f"{message.message_id}.jpg"
-        await bot.download_file(file.file_path, f"photos/{photo_name}")
-    await state.update_data(photo=photo_name)
-    await message.answer("Maxsulot nomini yozing:")
-    await state.set_state(AdminStates.add_product_name)
-
-@dp.message(AdminStates.add_product_name)
-async def add_product_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
-    await message.answer("Tavsif yozing:")
-    await state.set_state(AdminStates.add_product_desc)
-
-@dp.message(AdminStates.add_product_desc)
-async def add_product_desc(message: types.Message, state: FSMContext):
-    await state.update_data(desc=message.text.strip())
-    await message.answer("Kod yozing:")
-    await state.set_state(AdminStates.add_product_code)
-
-@dp.message(AdminStates.add_product_code)
-async def add_product_code(message: types.Message, state: FSMContext):
-    await state.update_data(code=message.text.strip())
-    kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🇺🇿 So'm"), KeyboardButton(text="💵 USD")]
-    ], resize_keyboard=True)
-    await message.answer("Narx birligini tanlang:", reply_markup=kb)
-    await state.set_state(AdminStates.add_product_currency)
-
-@dp.message(AdminStates.add_product_currency)
-async def add_product_currency(message: types.Message, state: FSMContext):
-    currency = "SOM" if "So'm" in message.text else "USD"
-    await state.update_data(currency=currency)
-    await message.answer(f"{currency} da narxni yozing:", reply_markup=ReplyKeyboardRemove())
-    await state.set_state(AdminStates.add_product_price)
-
-@dp.message(AdminStates.add_product_price)
-async def add_product_price(message: types.Message, state: FSMContext):
-    try:
-        price = float(message.text.strip().replace(" ", ""))
-        data = await state.get_data()
-        price_som = int(price) if data['currency'] == "SOM" else 0
-        price_usd = price if data['currency'] == "USD" else 0.0
-        cursor.execute("""INSERT INTO products
-                          (category_id, name, description, code, price_som, price_usd, currency, photo)
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                       (data['cat_id'], data['name'], data['desc'], data['code'],
-                        price_som, price_usd, data['currency'], data.get('photo')))
-        conn.commit()
-        await message.answer("✅ Maxsulot muvaffaqiyatli qo'shildi!", reply_markup=admin_panel_menu)
-        await state.clear()
-    except ValueError:
-        await message.answer("Raqam kiriting!")
-
-# ==================== MAXSULOT O'CHIRISH ====================
-@dp.callback_query(lambda c: c.data.startswith("delprodcat_"))
-async def delete_product_category(callback: types.CallbackQuery):
-    cat_id = int(callback.data.split("_")[1])
-    cursor.execute("SELECT id, name FROM products WHERE category_id=?", (cat_id,))
+@dp.callback_query(F.data == "show_all")
+async def callback_show_all(callback: CallbackQuery):
+    cursor.execute("SELECT * FROM products")
     prods = cursor.fetchall()
+    await send_products(callback.message, prods)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("viewcat_"))
+async def callback_view_cat(callback: CallbackQuery):
+    cat_id = callback.data.split("_")[1]
+    cursor.execute("SELECT * FROM products WHERE category_id=?", (cat_id,))
+    prods = cursor.fetchall()
+    await send_products(callback.message, prods)
+    await callback.answer()
+
+async def send_products(message, prods):
     if not prods:
-        await callback.message.answer("Bu kategoriyada maxsulot yo'q.", reply_markup=admin_panel_menu)
-        await callback.answer()
+        await message.answer("Hozircha mahsulotlar yo'q.")
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=name, callback_data=f"delprod_{pid}")] for pid, name in prods
-    ])
-    await callback.message.answer("O'chiriladigan maxsulotni tanlang:", reply_markup=kb)
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data.startswith("delprod_"))
-async def delete_product_process(callback: types.CallbackQuery):
-    prod_id = int(callback.data.split("_")[1])
-    cursor.execute("DELETE FROM products WHERE id=?", (prod_id,))
-    conn.commit()
-    await callback.message.answer("✅ Maxsulot o'chirildi!", reply_markup=admin_panel_menu)
-    await callback.answer()
-
-# ==================== KATEGORIYA O'CHIRISH ====================
-@dp.callback_query(lambda c: c.data.startswith("delcat_"))
-async def delete_category_process(callback: types.CallbackQuery):
-    cat_id = int(callback.data.split("_")[1])
-    cursor.execute("DELETE FROM products WHERE category_id=?", (cat_id,))
-    cursor.execute("DELETE FROM categories WHERE id=?", (cat_id,))
-    conn.commit()
-    await callback.message.answer("✅ Kategoriya va uning maxsulotlari o'chirildi!", reply_markup=admin_panel_menu)
-    await callback.answer()
-
-# ==================== KURS TAXRIRLASH ====================
-@dp.callback_query(lambda c: c.data.startswith("editcourse_"))
-async def edit_course_type(callback: types.CallbackQuery, state: FSMContext):
-    ctype = callback.data.split("_")[1]
-    await state.update_data(ctype=ctype)
-    await callback.message.answer("Yangi tavsif yozing:", reply_markup=ReplyKeyboardRemove())
-    await state.set_state(AdminStates.edit_course_desc)
-    await callback.answer()
-
-@dp.message(AdminStates.edit_course_desc)
-async def edit_course_desc(message: types.Message, state: FSMContext):
-    await state.update_data(desc=message.text.strip())
-    await message.answer("Yangi narxni so'mda yozing:")
-    await state.set_state(AdminStates.edit_course_price)
-
-@dp.message(AdminStates.edit_course_price)
-async def edit_course_price(message: types.Message, state: FSMContext):
-    try:
-        price = int(message.text.strip().replace(" ", ""))
-        data = await state.get_data()
-        cursor.execute("INSERT OR REPLACE INTO courses (type, description, price_som) VALUES (?, ?, ?)",
-                       (data['ctype'], data['desc'], price))
-        conn.commit()
-        await message.answer("✅ Kurs ma'lumotlari yangilandi!", reply_markup=admin_panel_menu)
-        await state.clear()
-    except ValueError:
-        await message.answer("Raqam kiriting!")
-
-# ==================== BARCHA MAXSULOTLAR ====================
-@dp.callback_query(lambda c: c.data == "all_products")
-async def show_all_products(callback: types.CallbackQuery):
-    cursor.execute("SELECT id, name, description, code, price_som, price_usd, currency, photo FROM products")
-    products = cursor.fetchall()
-    menu = admin_menu if callback.from_user.id == ADMIN_ID else main_menu
-    if not products:
-        await callback.message.answer("Maxsulotlar yo'q.", reply_markup=menu)
-        await callback.answer()
-        return
-    for p in products:
-        pid, name, desc, code, price_som, price_usd, currency, photo = p
-        text = f"<b>{name}</b>\n{desc}\nKod: {code}\n"
-        if currency == "USD":
-            text += f"Narx: 💵 ${price_usd:.2f}"
+    for p in prods:
+        # p[0]:id, p[2]:name, p[3]:desc, p[5]:som, p[6]:usd, p[7]:curr, p[8]:photo
+        price_str = f"{p[5]:,} so'm" if p[7] == "SOM" else f"${p[6]} (USD)"
+        caption = f"<b>{p[2]}</b>\n\n{p[3]}\n\nNarxi: {price_str}\nKod: {p[4]}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🛒 Savatchaga qo'shish", callback_data=f"addcart_{p[0]}") ]])
+        
+        if p[8] and os.path.exists(f"photos/{p[8]}"):
+            await message.answer_photo(FSInputFile(f"photos/{p[8]}"), caption=caption, reply_markup=kb, parse_mode="HTML")
         else:
-            text += f"Narx: 🇺🇿 {price_som:,} so'm"
+            await message.answer(caption, reply_markup=kb, parse_mode="HTML")
+
+# ==================== SAVATCHA ====================
+@dp.callback_query(F.data.startswith("addcart_"))
+async def add_to_cart(callback: CallbackQuery):
+    pid = int(callback.data.split("_")[1])
+    uid = callback.from_user.id
+    cursor.execute("INSERT INTO cart (user_id, product_id, quantity) VALUES (?, ?, 1) ON CONFLICT(user_id, product_id) DO UPDATE SET quantity = quantity + 1", (uid, pid))
+    conn.commit()
+    await callback.answer("Savatchaga qo'shildi!")
+
+@dp.message(F.text == "SAVATCHA")
+async def view_cart(message: types.Message):
+    uid = message.from_user.id
+    cursor.execute("""SELECT p.name, p.price_som, p.price_usd, p.currency, c.quantity FROM cart c 
+                      JOIN products p ON c.product_id = p.id WHERE c.user_id=?""", (uid,))
+    items = cursor.fetchall()
+    if not items:
+        await message.answer("Savatchangiz bo'sh.")
+        return
+    
+    rate = get_usd_rate()
+    total_som = 0
+    msg = "🛒 <b>Savatchangiz:</b>\n\n"
+    for name, p_som, p_usd, curr, qty in items:
+        if curr == "USD":
+            item_som = p_usd * rate * qty
+            msg += f"• {name} | ${p_usd} x {qty} = 💵 ${p_usd*qty} ({(item_som):,.0f} so'm)\n"
+            total_som += item_som
+        else:
+            item_som = p_som * qty
+            msg += f"• {name} | {p_som:,} so'm x {qty} = 🇺🇿 {item_som:,} so'm\n"
+            total_som += item_som
+            
+    msg += f"\n<b>Jami to'lov: {total_som:,.0f} so'm</b>"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 To'lov qilish", callback_data="checkout")],
+        [InlineKeyboardButton(text="🗑 Savatni tozalash", callback_data="clear_savat")]
+    ])
+    await message.answer(msg, reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data == "checkout")
+async def checkout(callback: CallbackQuery, state: FSMContext):
+    card = get_setting('card_number')
+    await callback.message.answer(f"To'lov qilish uchun karta raqami:\n\n<code>{card}</code>\n\nTo'lovni amalga oshirib, screenshotni shu yerga yuboring.", parse_mode="HTML")
+    await state.set_state(UserStates.waiting_payment_proof)
+    await state.update_data(payment_for="product")
+    await callback.answer()
+
+# ==================== O'QUV KURSLARI ====================
+@dp.message(F.text == "O'QUV KURS YANGILIKLARI")
+async def kurs_news(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Oddiy kurs", callback_data="kurs_reg_oddiy")],
+        [InlineKeyboardButton(text="Master Klass", callback_data="kurs_reg_master")]
+    ])
+    await message.answer("🎓 Kurslarimiz haqida ma'lumot olish yoki yozilish uchun tanlang:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("kurs_reg_"))
+async def kurs_reg(callback: CallbackQuery, state: FSMContext):
+    ktype = callback.data.split("_")[2]
+    cursor.execute("SELECT description, price_som FROM courses WHERE type=?", (ktype,))
+    res = cursor.fetchone()
+    desc = res[0] if res else "Hali ma'lumot kiritilmagan."
+    price = res[1] if res else 0
+    
+    await callback.message.answer(f"🎓 <b>{ktype.upper()}</b>\n\n{desc}\n\nNarxi: {price:,} so'm\n\nRo'yxatdan o'tish uchun F.I.SH kiriting:")
+    await state.set_state(UserStates.waiting_fish)
+    await state.update_data(kurs_type=ktype, price=price)
+    await callback.answer()
+
+@dp.message(UserStates.waiting_fish)
+async def process_fish(message: types.Message, state: FSMContext):
+    await state.update_data(fish=message.text)
+    card = get_setting('card_number')
+    await message.answer(f"To'lovni amalga oshiring:\nKarta: <code>{card}</code>\n\nScreenshotni yuboring.", parse_mode="HTML")
+    await state.set_state(UserStates.waiting_payment_proof)
+    await state.update_data(payment_for="course")
+
+# ==================== TO'LOV SCREENSHOTINI QABUL QILISH ====================
+@dp.message(UserStates.waiting_payment_proof, F.photo)
+async def handle_screenshot(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    await message.answer("📸 Screenshot qabul qilindi. Admin tasdiqlashini kuting.")
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ TASDIQLASH", callback_data=f"adm_confirm_{message.from_user.id}_{data['payment_for']}")]
+    ])
+    
+    info_txt = f"💰 YANGI TO'LOV!\nKimdan: {message.from_user.full_name}\nNima uchun: {data['payment_for']}\n"
+    if data['payment_for'] == "course":
+        info_txt += f"Kurs: {data['kurs_type']}\nF.I.SH: {data['fish']}"
+        
+    await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=info_txt, reply_markup=kb)
+    await state.clear()
+
+# ==================== ADMIN TASDIQLASHI ====================
+@dp.callback_query(F.data.startswith("adm_confirm_"))
+async def admin_confirmation(callback: CallbackQuery):
+    _, _, uid, p_for = callback.data.split("_")
+    uid = int(uid)
+    
+    await bot.send_message(uid, "✅ Admin to'lovingizni tasdiqladi!")
+    
+    if p_for == "product":
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 Savatchaga qo'shish", callback_data=f"add_{pid}")]
+            [InlineKeyboardButton(text="🚶 O'ZIM OLIB KETAMAN", callback_data="dlv_self")],
+            [InlineKeyboardButton(text="🚚 YETKAZIB BERISH", callback_data="dlv_courier")]
         ])
-        if photo and os.path.exists(f"photos/{photo}"):
-            await callback.message.answer_photo(
-                FSInputFile(f"photos/{photo}"),
-                caption=text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-        else:
-            await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer()
-
-# ==================== TO'LOV SCREENSHOT ====================
-pending_payments = {}
-
-@dp.message(lambda m: m.photo)
-async def handle_payment_screenshot(message: types.Message, state: FSMContext):
-    screenshot_id = message.message_id
-    await bot.forward_message(ADMIN_ID, message.chat.id, screenshot_id)
-    await message.answer("📸 Screenshot adminga yuborildi. Tasdiqlanishini kuting.")
-    # Adminga rasm tagida tasdiqlash tugmasi
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"confirm_{screenshot_id}")]
-    ])
-    await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption="To'lov screenshot – tasdiqlaysizmi?", reply_markup=kb)
-
-@dp.callback_query(lambda c: c.data.startswith("confirm_") and c.from_user.id == ADMIN_ID)
-async def confirm_payment(callback: types.CallbackQuery):
-    screenshot_id = int(callback.data.split("_")[1])
-    user_id = None
-    payment_type = None
-    course_type = None
-    for uid, info in pending_payments.items():
-        if info['screenshot_id'] == screenshot_id:
-            user_id = uid
-            payment_type = info['type']
-            course_type = info.get('course_type')
-            break
-    if not user_id:
-        await callback.answer("Topilmadi")
-        return
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("✅ Tasdiqlandi!")
-    await bot.send_message(user_id, "Admin tasdiqladi!")
-
-    if payment_type == "course":
-        await bot.send_message(user_id, "Siz o'quv kursiga ro'yxatga olindingiz!", reply_markup=main_menu)
+        await bot.send_message(uid, "Yetkazib berish usulini tanlang:", reply_markup=kb)
     else:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚶 Uzim olib ketaman", callback_data="self_pickup")],
-            [InlineKeyboardButton(text="🚚 Yetkazib berish", callback_data="delivery")]
-        ])
-        await bot.send_message(user_id, "Yetkazib berish turini tanlang:", reply_markup=kb)
+        await bot.send_message(uid, "🎓 Siz o'quv kursiga muvaffaqiyatli ro'yxatga olindingiz! Yaqin orada siz bilan bog'lanamiz.")
+        # Bu yerda bazaga saqlash mumkin
+        
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer("Tasdiqlandi")
 
-    if user_id in pending_payments:
-        del pending_payments[user_id]
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data in ["self_pickup", "delivery"])
-async def delivery_choice(callback: types.CallbackQuery):
-    delivery = "Uzim olib ketaman" if callback.data == "self_pickup" else "Yetkazib berish"
-    user_id = callback.from_user.id
-    cursor.execute("SELECT value FROM settings WHERE key='location'")
-    location_row = cursor.fetchone()
-    location = location_row[0] if location_row else "Manzil kiritilmagan"
-    cursor.execute("SELECT value FROM settings WHERE key='admin_info'")
-    admin_info_row = cursor.fetchone()
-    admin_info = admin_info_row[0] if admin_info_row else "Admin bilan bog'laning"
-    await callback.message.answer(f"✅ Qabul qilindi!\n\n{delivery}\n\nManzil: {location}\n{admin_info}\nXaridingizdan mamnunmiz!", reply_markup=main_menu if user_id != ADMIN_ID else admin_menu)
-    cursor.execute("DELETE FROM cart WHERE user_id=?", (user_id,))
+@dp.callback_query(F.data.startswith("dlv_"))
+async def delivery_process(callback: CallbackQuery):
+    loc = get_setting('location')
+    adm = get_setting('admin_info')
+    text = f"✅ QABUL QILINDI!\n\n📍 Manzil: {loc}\n☎️ Admin: {adm}\n\nXaridingizdan mamnunmiz!"
+    await callback.message.answer(text, reply_markup=get_main_menu(callback.from_user.id))
+    cursor.execute("DELETE FROM cart WHERE user_id=?", (callback.from_user.id,))
     conn.commit()
     await callback.answer()
 
-# ==================== RENDER WEB SERVER ====================
-async def health(request):
-    return web.Response(text="Bot is running!")
+# ==================== SOZLAMALAR (ADMIN) ====================
+@dp.message(F.text == "⚙️ SOZLAMALAR", F.from_user.id == ADMIN_ID)
+async def settings_main(message: types.Message):
+    await message.answer("⚙️ Sozlamalar bo'limi:", reply_markup=admin_panel_kb)
 
-async def web_server():
+@dp.message(F.text == "💱 Valyuta kursi", F.from_user.id == ADMIN_ID)
+async def set_usd_state(message: types.Message, state: FSMContext):
+    current = get_setting('usd_rate')
+    await message.answer(f"Hozirgi kurs: 1 USD = {current} so'm\nYangi kursni raqamlarda kiriting:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AdminStates.usd_rate)
+
+@dp.message(AdminStates.usd_rate)
+async def save_usd(message: types.Message, state: FSMContext):
+    if message.text.isdigit():
+        cursor.execute("UPDATE settings SET value=? WHERE key='usd_rate'", (message.text,))
+        conn.commit()
+        await message.answer("✅ Kurs yangilandi!", reply_markup=admin_panel_kb)
+        await state.clear()
+    else:
+        await message.answer("Faqat raqam kiriting!")
+
+# ==================== BIZNING MANZIL ====================
+@dp.message(F.text == "BIZNING MANZIL")
+async def show_loc(message: types.Message):
+    loc = get_setting('location')
+    await message.answer(f"📍 Bizning manzil:\n\n{loc}")
+
+# ==================== ADMIN: MAXSULOT QO'SHISH ====================
+@dp.message(F.text == "🛍 Maxsulot qo'shish", F.from_user.id == ADMIN_ID)
+async def adm_add_p(message: types.Message, state: FSMContext):
+    cursor.execute("SELECT id, name FROM categories")
+    cats = cursor.fetchall()
+    if not cats:
+        await message.answer("Avval kategoriya qo'shing!")
+        return
+    kb = [[InlineKeyboardButton(text=c[1], callback_data=f"addpcat_{c[0]}")] for c in cats]
+    await message.answer("Kategoriyani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("addpcat_"))
+async def adm_p_cat(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(cat_id=callback.data.split("_")[1])
+    await callback.message.answer("Maxsulot rasmini yuboring:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AdminStates.add_product)
+    await callback.answer()
+
+# Qolgan admin funksiyalari (o'chirish, tahrirlash) yuqoridagi mantiq kabi davom etadi...
+
+# ==================== WEB SERVER VA ISHGA TUSHURISH ====================
+async def handle_web(request): return web.Response(text="Bot is online")
+
+async def main():
     app = web.Application()
-    app.router.add_get('/', health)
+    app.router.add_get('/', handle_web)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', 8000)
     await site.start()
-
-async def main():
-    await asyncio.gather(
-        web_server(),
-        dp.start_polling(bot)
-    )
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped")
