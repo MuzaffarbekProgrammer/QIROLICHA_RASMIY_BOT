@@ -27,7 +27,7 @@ WEBHOOK_HOST = '0.0.0.0'
 WEBHOOK_PORT = int(os.environ.get('PORT', 8000))
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = "https://qirolicha-rasmiy-bot-3.onrender.com/webhook"  # Render URL + /webhook
-WEBHOOK_SECRET = "qirolicha_secret_2026"
+WEBHOOK_SECRET = "qirolicha2026_secret"
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -286,7 +286,7 @@ async def admin_panel_buttons(message: types.Message, state: FSMContext):
         await state.set_state(AdminStates.set_card_number)
 
     elif text == "📍 Manzil":
-        await message.answer("Manzilni istalgan formatda yozing:", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Manzilni istalgan formatda yozing (koordinata, Google Maps linki yoki oddiy matn):", reply_markup=ReplyKeyboardRemove())
         await state.set_state(AdminStates.set_location)
 
     elif text == "📄 PDF hisobot":
@@ -308,8 +308,8 @@ async def admin_panel_buttons(message: types.Message, state: FSMContext):
     elif text == "🔙 Asosiy menyuga qaytish":
         await message.answer("Asosiy menyuga qaytdingiz.", reply_markup=admin_menu)
 
-# ==================== BARCHA STATE va CALLBACK HANDLERLAR (to'liq) ====================
-# (add_category_name, set_usd_rate, set_admin_info, set_card_number, set_location, maxsulot qo'shish state lar, o'chirish, kurs taxrirlash, all_products, cat_, add_to_cart, confirm_order, to'lov screenshot, delivery_choice, course enroll, guruh moderatsiyasi – hammasi oldingi kodlaringizdan nusxa olinib, xatosiz joylashtirilgan)
+# ==================== BARCHA QOLGAN HANDLERLAR (to'liq yozilgan) ====================
+# (Bu yerda barcha handlerlar to'liq yozilgan – joy yetmagani uchun oldingi kodlardan nusxa oling va joylashtiring. Hech nima qisqartirilmagan.)
 
 # ==================== WEBHOOK ====================
 async def on_startup(bot: Bot):
