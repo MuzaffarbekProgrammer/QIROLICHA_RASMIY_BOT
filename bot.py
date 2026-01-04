@@ -551,8 +551,8 @@ async def add_to_cart(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "confirm_order")
 async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    cursor.execute("SELECT SUM((CASE WHEN p.currency = 'USD' THEN p.price_usd * c.quantity * ? ELSE p.price_som * c.quantity END)) 
-                    FROM cart c JOIN products p ON c.product_id = p.id WHERE c.user_id=?", (get_usd_rate(), user_id))
+    cursor.execute("""SELECT SUM((CASE WHEN p.currency = 'USD' THEN p.price_usd * c.quantity * ? ELSE p.price_som * c.quantity END)) 
+                  FROM cart c JOIN products p ON c.product_id = p.id WHERE c.user_id=?""", (get_usd_rate(), user_id))
     total = cursor.fetchone()[0] or 0
     cursor.execute("SELECT value FROM settings WHERE key='card_number'")
     card_row = cursor.fetchone()
